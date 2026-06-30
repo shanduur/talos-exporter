@@ -1,3 +1,8 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+// Package client provides a convenience wrapper for creating Talos API clients.
 package client
 
 import (
@@ -8,6 +13,7 @@ import (
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 )
 
+// TalosClientOptions holds parameters for creating a Talos API client.
 type TalosClientOptions struct {
 	TalosConfig     string
 	SideroV1KeysDir string
@@ -16,6 +22,9 @@ type TalosClientOptions struct {
 	Endpoints       []string
 }
 
+// New creates a new Talos API client from the provided options.
+// It reads the Talos configuration, applies endpoint/cluster/context overrides,
+// and returns an initialized client ready for use.
 func New(
 	ctx context.Context,
 	opts TalosClientOptions,

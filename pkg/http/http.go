@@ -1,3 +1,8 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+// Package http provides an HTTP server that serves Prometheus metrics handlers.
 package http
 
 import (
@@ -12,6 +17,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Run starts an HTTP server that serves the provided handlers on the given address.
+// It blocks until the context is canceled or the server fails, and handles
+// graceful shutdown with a 10-second timeout.
 func Run(ctx context.Context, handlers map[string]http.Handler, addr string) error {
 	mux := http.NewServeMux()
 
