@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -42,11 +41,11 @@ var (
 		[]string{"meta_node", "meta_namespace", "meta_type"},
 		nil,
 	)
-
-	metricDescriptorRE = regexp.MustCompile(`[A-Z]`)
 )
 
 type talosCollector struct {
+	logger *slog.Logger
+
 	nodeCache struct {
 		expiresAt time.Time
 		nodes     []string
@@ -64,6 +63,7 @@ type descriptorsCache struct {
 
 func newTalosCollector(c *client.Client, opts Options) *talosCollector {
 	return &talosCollector{
+		logger:  slog.Default(),
 		client:  c,
 		options: opts,
 		metricDescriptors: descriptorsCache{
@@ -86,24 +86,24 @@ func (c *talosCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *talosCollector) Collect(ch chan<- prometheus.Metric) {
-	slog.Info("starting metrics collection")
-	defer slog.Info("finished metrics collection")
+	c.logger.Info("starting metrics collection")
+	defer c.logger.Info("finished metrics collection")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	nodes, err := c.discoverNodes(ctx)
 	if err != nil {
-		slog.Error("failed to discover nodes", "error", err)
+		c.logger.Error("failed to discover nodes", "error", err)
 
 		return
 	}
 
-	slog.Debug("discovered nodes", "count", len(nodes), "nodes", nodes)
+	c.logger.Debug("discovered nodes", "count", len(nodes), "nodes", nodes)
 
 	for _, node := range nodes {
 		if err := c.collectForNode(ctx, node, ch); err != nil {
-			slog.Error("failed to collect metrics for node", "node", node, "error", err)
+			c.logger.Error("failed to collect metrics for node", "node", node, "error", err)
 		}
 	}
 }
@@ -114,7 +114,7 @@ func (c *talosCollector) discoverNodes(ctx context.Context) ([]string, error) {
 	if time.Now().Before(c.nodeCache.expiresAt) {
 		nodes := c.nodeCache.nodes
 		c.nodeCache.RUnlock()
-		slog.Debug("using cached nodes", "count", len(nodes))
+		c.logger.Debug("using cached nodes", "count", len(nodes))
 
 		return nodes, nil
 	}
@@ -128,7 +128,7 @@ func (c *talosCollector) discoverNodes(ctx context.Context) ([]string, error) {
 		return c.nodeCache.nodes, nil
 	}
 
-	slog.Debug("refreshing node cache")
+	c.logger.Debug("refreshing node cache")
 
 	items, err := safe.StateListAll[*cluster.Member](ctx, c.client.COSI)
 	if err != nil {
@@ -146,22 +146,22 @@ func (c *talosCollector) discoverNodes(ctx context.Context) ([]string, error) {
 	c.nodeCache.nodes = nodes
 	c.nodeCache.expiresAt = time.Now().Add(c.options.NodeCacheTTL)
 
-	slog.Info("discovered nodes", "count", len(nodes))
+	c.logger.Info("discovered nodes", "count", len(nodes))
 
 	return nodes, nil
 }
 
 func (c *talosCollector) collectForNode(ctx context.Context, node string, ch chan<- prometheus.Metric) error {
-	slog.Debug("collecting metrics for node", "node", node)
+	c.logger.Debug("collecting metrics for node", "node", node)
 
 	version, err := c.getVersion(ctx, node)
 	if err != nil {
-		slog.Warn("failed to get Talos version", "node", node, "error", err)
+		c.logger.Warn("failed to get Talos version", "node", node, "error", err)
 
 		version = "unknown"
 	}
 
-	slog.Debug("talos version", "node", node, "version", version)
+	c.logger.Debug("talos version", "node", node, "version", version)
 
 	ch <- prometheus.MustNewConstMetric(
 		talosVersionInfo,
@@ -197,7 +197,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 		return fmt.Errorf("failed to list resource definitions: %w", err)
 	}
 
-	slog.Debug("resource definitions listed",
+	c.logger.Debug("resource definitions listed",
 		"node", node,
 		"count", len(rdList.Items))
 
@@ -208,7 +208,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 
 		rdDef, err := extractResourceDefinitionSpec(rd)
 		if err != nil {
-			slog.Debug("failed to extract resource definition spec",
+			c.logger.Debug("failed to extract resource definition spec",
 				"id", rdMeta.ID(),
 				"error", err)
 
@@ -232,7 +232,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 			state.WithListUnmarshalOptions(state.WithSkipProtobufUnmarshal()),
 		)
 		if err != nil {
-			slog.Warn("failed to list resources",
+			c.logger.Warn("failed to list resources",
 				"node", node,
 				"namespace", actualNamespace,
 				"type", actualType,
@@ -258,7 +258,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 			continue
 		}
 
-		slog.Debug("found resources",
+		c.logger.Debug("found resources",
 			"node", node,
 			"namespace", actualNamespace,
 			"type", actualType,
@@ -277,7 +277,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 			for _, col := range rdDef.PrintColumns {
 				value, err := extractJSONPathFromResource(res, col.JSONPath)
 				if err != nil {
-					slog.Debug("failed to extract jsonpath",
+					c.logger.Debug("failed to extract jsonpath",
 						"path", col.JSONPath,
 						"resource", res.Metadata().ID(),
 						"error", err)
@@ -297,7 +297,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 		}
 	}
 
-	slog.Info("finished collecting resources for node",
+	c.logger.Info("finished collecting resources for node",
 		"node", node,
 		"total_resources", totalResources)
 
@@ -468,7 +468,5 @@ func toSnakeCase(s string) string {
 		}
 	}
 
-	return metricDescriptorRE.ReplaceAllStringFunc(result.String(), func(match string) string {
-		return "_" + strings.ToLower(match)
-	})
+	return result.String()
 }
