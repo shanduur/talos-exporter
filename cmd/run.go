@@ -15,7 +15,11 @@ func run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("creating client: %w", err)
 	}
-	defer cli.Close()
+	defer func() {
+		if err := cli.Close(); err != nil {
+			fmt.Printf("failed to close client: %v\n", err)
+		}
+	}()
 
 	metricsOpts := metrics.Options{
 		NodeCacheTTL:  opts.NodeCacheTTL,

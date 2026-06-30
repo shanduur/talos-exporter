@@ -3,9 +3,9 @@ package metrics
 import "time"
 
 type Options struct {
-	NodeCacheTTL  time.Duration
 	Namespaces    []string
 	ResourceTypes []string
+	NodeCacheTTL  time.Duration
 	MaxLabelLen   int
 	Aggregate     bool
 }

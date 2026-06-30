@@ -16,33 +16,39 @@ import (
 )
 
 type Options struct {
-	client.TalosClientOptions
 	HTTPListenAddress string
-	NodeCacheTTL      time.Duration
-	LogLevel          slog.Level
-	MetricsOptions    metrics.Options
+	client.TalosClientOptions
+	MetricsOptions metrics.Options
+	NodeCacheTTL   time.Duration
+	LogLevel       slog.Level
 }
 
 func main() {
-	var opts Options
-	var logLevelStr string
+	var (
+		opts        Options
+		logLevelStr string
+	)
 
-	pflag.StringVar(&opts.TalosConfig, "talosconfig", "",
-		fmt.Sprintf("The location to save the generated Talos configuration file to. Defaults to '%s' env variable if set, otherwise '%s' and '%s' in order.",
+	pflag.StringVar(
+		&opts.TalosConfig, "talosconfig", "",
+		fmt.Sprintf(
+			"The location to save the generated Talos configuration file to. Defaults to '%s' env variable if set, otherwise '%s' and '%s' in order.",
 			constants.TalosConfigEnvVar,
 			filepath.Join("$HOME", constants.TalosDir, constants.TalosconfigFilename),
 			filepath.Join(constants.ServiceAccountMountPath, constants.TalosconfigFilename),
 		),
 	)
-	pflag.StringVar(&opts.SideroV1KeysDir, "siderov1-keys-dir", "",
-		fmt.Sprintf("The path to the SideroV1 auth PGP keys directory. Defaults to '%s' env variable if set, otherwise '%s'. Only valid for Contexts that use SideroV1 auth.",
+	pflag.StringVar(
+		&opts.SideroV1KeysDir, "siderov1-keys-dir", "",
+		fmt.Sprintf(
+			"The path to the SideroV1 auth PGP keys directory. Defaults to '%s' env variable if set, otherwise '%s'. Only valid for Contexts that use SideroV1 auth.",
 			constants.SideroV1KeysDirEnvVar,
 			filepath.Join("$HOME", constants.TalosDir, constants.SideroV1KeysDir),
 		),
 	)
 	pflag.StringVar(&opts.Cluster, "cluster", "", "Cluster to connect to if a proxy endpoint is used.")
 	pflag.StringVar(&opts.Context, "context", "", "Context to be used in command")
-	pflag.StringSliceVar(&opts.Endpoints, "endpoints", nil, "Comma-separated list of API endpoints to connect to. If not specified, the client will use the endpoints defined in the Talos configuration file.")
+	pflag.StringSliceVar(&opts.Endpoints, "endpoints", nil, "Comma-separated list of API endpoints. Defaults to endpoints from Talos config.")
 	pflag.StringVar(&opts.HTTPListenAddress, "listen", ":9090", "HTTP listen address")
 	pflag.DurationVar(&opts.NodeCacheTTL, "node-cache-ttl", 30*time.Second, "How long to cache discovered nodes")
 	pflag.StringVar(&logLevelStr, "log-level", "info", "Log level (debug, info, warn, error)")
@@ -55,6 +61,7 @@ func main() {
 	pflag.Parse()
 
 	var logLevel slog.Level
+
 	switch logLevelStr {
 	case "debug":
 		logLevel = slog.LevelDebug

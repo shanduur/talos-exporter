@@ -19,7 +19,9 @@ func Run(ctx context.Context, handlers map[string]http.Handler, addr string) err
 		mux.Handle(path, handler)
 	}
 
-	lis, err := net.Listen("tcp", addr)
+	var lc net.ListenConfig
+
+	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("creating listener: %w", err)
 	}
@@ -48,6 +50,7 @@ func Run(ctx context.Context, handlers map[string]http.Handler, addr string) err
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
+
 		return err
 	})
 
@@ -55,7 +58,7 @@ func Run(ctx context.Context, handlers map[string]http.Handler, addr string) err
 	g.Go(func() error {
 		<-ctx.Done()
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 
 		slog.Info("shutting down HTTP server")
