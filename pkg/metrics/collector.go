@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
@@ -47,7 +46,14 @@ var (
 	talosCOSIResourceCount = prometheus.NewDesc(
 		"talos_cosi_resources",
 		"Count of COSI resources per type",
-		[]string{"meta_node", "meta_namespace", "meta_type"},
+		[]string{"meta__node", "meta__namespace", "meta__type"},
+		nil,
+	)
+
+	talosCollectionError = prometheus.NewDesc(
+		"talos_collection_error",
+		"Errors encountered while collecting Talos metrics. Value is always 1 for each error in the current scrape.",
+		[]string{"stage", "meta__node", "meta__namespace", "meta__type", "error"},
 		nil,
 	)
 )
@@ -55,45 +61,35 @@ var (
 type talosCollector struct {
 	logger *slog.Logger
 
-	nodeCache struct {
-		expiresAt time.Time
-		nodes     []string
-		sync.RWMutex
-	}
-	metricDescriptors descriptorsCache
-	client            *client.Client
-	options           Options
+	nodeCache *nodeCache
+	client    *client.Client
+	ctx       context.Context
+	options   Options
 }
 
-type descriptorsCache struct {
-	descriptors map[string]*prometheus.Desc
+type nodeCache struct {
+	expiresAt time.Time
+	nodes     []string
 	sync.RWMutex
 }
 
-func newTalosCollector(c *client.Client, opts Options) *talosCollector {
+func newTalosCollector(ctx context.Context, c *client.Client, opts Options) *talosCollector {
+	return newTalosCollectorWithCache(ctx, c, opts, &nodeCache{})
+}
+
+func newTalosCollectorWithCache(ctx context.Context, c *client.Client, opts Options, cache *nodeCache) *talosCollector {
 	return &talosCollector{
-		logger:  slog.Default(),
-		client:  c,
-		options: opts,
-		metricDescriptors: descriptorsCache{
-			descriptors: make(map[string]*prometheus.Desc),
-		},
+		logger:    slog.Default(),
+		nodeCache: cache,
+		client:    c,
+		ctx:       ctx,
+		options:   opts,
 	}
 }
 
 func (c *talosCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- talosExporterBuildInfo
-
-	ch <- talosVersionInfo
-
-	ch <- talosCOSIResourceCount
-
-	c.metricDescriptors.RLock()
-	defer c.metricDescriptors.RUnlock()
-
-	for _, desc := range c.metricDescriptors.descriptors {
-		ch <- desc
-	}
+	// Dynamic COSI resource metric names and label sets are discovered at scrape time.
+	// Sending no descriptors marks this collector as unchecked, avoiding a descriptor cache.
 }
 
 func (c *talosCollector) Collect(ch chan<- prometheus.Metric) {
@@ -105,12 +101,18 @@ func (c *talosCollector) Collect(ch chan<- prometheus.Metric) {
 		version.Tag, version.SHA, version.Name,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	nodes, err := c.discoverNodes(ctx)
 	if err != nil {
 		c.logger.Error("failed to discover nodes", "error", err)
+		emitCollectionError(ch, "discover_nodes", "", "", "", err, c.options.MaxLabelLen)
 
 		return
 	}
@@ -151,11 +153,18 @@ func (c *talosCollector) discoverNodes(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to list cluster members: %w", err)
 	}
 
+	seen := make(map[string]struct{})
 	var nodes []string
 
 	for res := range items.All() {
 		for _, addr := range res.TypedSpec().Addresses {
-			nodes = append(nodes, addr.String())
+			node := addr.String()
+			if _, ok := seen[node]; ok {
+				continue
+			}
+
+			seen[node] = struct{}{}
+			nodes = append(nodes, node)
 		}
 	}
 
@@ -173,6 +182,7 @@ func (c *talosCollector) collectForNode(ctx context.Context, node string, ch cha
 	version, err := c.getVersion(ctx, node)
 	if err != nil {
 		c.logger.Warn("failed to get Talos version", "node", node, "error", err)
+		emitCollectionError(ch, "get_version", node, runtime.NamespaceName, runtime.VersionType, err, c.options.MaxLabelLen)
 
 		version = "unknown"
 	}
@@ -204,12 +214,16 @@ func (c *talosCollector) getVersion(ctx context.Context, node string) (string, e
 }
 
 func (c *talosCollector) collectResources(ctx context.Context, node string, ch chan<- prometheus.Metric) error {
+	nodeCtx := client.WithNode(ctx, node)
+
 	rdList, err := c.client.COSI.List(
-		ctx,
+		nodeCtx,
 		resource.NewMetadata(meta.NamespaceName, meta.ResourceDefinitionType, "", resource.VersionUndefined),
 		state.WithListUnmarshalOptions(state.WithSkipProtobufUnmarshal()),
 	)
 	if err != nil {
+		emitCollectionError(ch, "list_resource_definitions", node, meta.NamespaceName, meta.ResourceDefinitionType, err, c.options.MaxLabelLen)
+
 		return fmt.Errorf("failed to list resource definitions: %w", err)
 	}
 
@@ -227,6 +241,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 			c.logger.Debug("failed to extract resource definition spec",
 				"id", rdMeta.ID(),
 				"error", err)
+			emitCollectionError(ch, "extract_resource_definition", node, rdMeta.Namespace(), rdMeta.Type(), err, c.options.MaxLabelLen)
 
 			continue
 		}
@@ -243,7 +258,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 		}
 
 		resources, err := c.client.COSI.List(
-			ctx,
+			nodeCtx,
 			resource.NewMetadata(rdDef.DefaultNamespace, rdDef.Type, "", resource.VersionUndefined),
 			state.WithListUnmarshalOptions(state.WithSkipProtobufUnmarshal()),
 		)
@@ -253,6 +268,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 				"namespace", actualNamespace,
 				"type", actualType,
 				"error", err)
+			emitCollectionError(ch, "list_resources", node, actualNamespace, actualType, err, c.options.MaxLabelLen)
 
 			continue
 		}
@@ -280,12 +296,13 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 			"type", actualType,
 			"count", len(resources.Items))
 
-		labels := []string{"meta_node", "meta_namespace", "meta_type", "meta_id"}
-		for _, col := range rdDef.PrintColumns {
-			labels = append(labels, toSnakeCase(col.Name))
-		}
-
-		desc := c.getOrCreateDescriptor(actualNamespace, actualType, rdDef.PrintColumns)
+		labelNames := resourceLabelNames(rdDef.PrintColumns)
+		desc := prometheus.NewDesc(
+			resourceMetricName(actualNamespace, actualType),
+			"COSI resource presence",
+			labelNames,
+			nil,
+		)
 
 		for _, res := range resources.Items {
 			labelValues := []string{node, actualNamespace, actualType, res.Metadata().ID()}
@@ -297,6 +314,7 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 						"path", col.JSONPath,
 						"resource", res.Metadata().ID(),
 						"error", err)
+					emitCollectionError(ch, "extract_print_column", node, actualNamespace, actualType, err, c.options.MaxLabelLen)
 
 					value = ""
 				}
@@ -318,46 +336,6 @@ func (c *talosCollector) collectResources(ctx context.Context, node string, ch c
 		"total_resources", totalResources)
 
 	return nil
-}
-
-func (c *talosCollector) getOrCreateDescriptor(namespace, resourceType string, columns []meta.PrintColumn) *prometheus.Desc {
-	labelNames := make([]string, 4, 4+len(columns))
-	labelNames[0] = "meta__node"
-	labelNames[1] = "meta__namespace"
-	labelNames[2] = "meta__type"
-	labelNames[3] = "meta__id"
-
-	for _, col := range columns {
-		labelNames = append(labelNames, toSnakeCase(col.Name))
-	}
-
-	key := fmt.Sprintf("%s/%s/%s", namespace, resourceType, labelNames)
-
-	c.metricDescriptors.RLock()
-	desc, ok := c.metricDescriptors.descriptors[key]
-	c.metricDescriptors.RUnlock()
-
-	if ok {
-		return desc
-	}
-
-	c.metricDescriptors.Lock()
-	defer c.metricDescriptors.Unlock()
-
-	if desc, ok = c.metricDescriptors.descriptors[key]; ok {
-		return desc
-	}
-
-	desc = prometheus.NewDesc(
-		"talos_cosi_resource",
-		"COSI resource presence",
-		labelNames,
-		nil,
-	)
-
-	c.metricDescriptors.descriptors[key] = desc
-
-	return desc
 }
 
 type resourceDefinitionSpec struct {
@@ -419,6 +397,134 @@ func extractResourceDefinitionSpec(rd resource.Resource) (*resourceDefinitionSpe
 	return result, nil
 }
 
+func emitCollectionError(ch chan<- prometheus.Metric, stage, node, namespace, resourceType string, err error, maxLabelLen int) {
+	if err == nil {
+		return
+	}
+
+	ch <- prometheus.MustNewConstMetric(
+		talosCollectionError,
+		prometheus.GaugeValue,
+		1,
+		stage,
+		node,
+		namespace,
+		resourceType,
+		sanitizeLabelValue(err.Error(), maxLabelLen),
+	)
+}
+
+func resourceMetricName(namespace resource.Namespace, resourceType resource.Type) string {
+	return "talos_cosi_resource_" + sanitizeMetricPart(namespace) + "_" + sanitizeMetricPart(resourceType)
+}
+
+func resourceLabelNames(columns []meta.PrintColumn) []string {
+	labels := []string{"meta__node", "meta__namespace", "meta__type", "meta__id"}
+	seen := make(map[string]int, len(labels)+len(columns))
+
+	for _, label := range labels {
+		seen[label] = 1
+	}
+
+	for _, col := range columns {
+		base := sanitizeLabelName(col.Name)
+		label := base
+
+		for seen[label] > 0 {
+			seen[base]++
+			label = fmt.Sprintf("%s_%d", base, seen[base])
+		}
+
+		if seen[base] == 0 {
+			seen[base] = 1
+		}
+
+		seen[label] = 1
+		labels = append(labels, label)
+	}
+
+	return labels
+}
+
+func sanitizeMetricPart(s string) string {
+	return sanitizeIdentifier(s, true)
+}
+
+func sanitizeLabelName(s string) string {
+	return sanitizeIdentifier(s, true)
+}
+
+func sanitizeIdentifier(s string, lower bool) string {
+	var b strings.Builder
+	lastUnderscore := false
+
+	for _, r := range s {
+		if lower {
+			r = asciiLower(r)
+		}
+
+		if isIdentifierRune(r) {
+			b.WriteRune(r)
+			lastUnderscore = false
+
+			continue
+		}
+
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+
+	result := strings.Trim(b.String(), "_")
+	if result == "" {
+		return "unknown"
+	}
+
+	first, _ := utf8FirstRune(result)
+	if !isIdentifierFirstRune(first) {
+		return "_" + result
+	}
+
+	return result
+}
+
+func utf8FirstRune(s string) (rune, int) {
+	for i, r := range s {
+		return r, i
+	}
+
+	return 0, 0
+}
+
+func isIdentifierRune(r rune) bool {
+	return r == '_' || isASCIILower(r) || isASCIIUpper(r) || isASCIIDigit(r)
+}
+
+func isIdentifierFirstRune(r rune) bool {
+	return r == '_' || isASCIILower(r) || isASCIIUpper(r)
+}
+
+func asciiLower(r rune) rune {
+	if isASCIIUpper(r) {
+		return r + 'a' - 'A'
+	}
+
+	return r
+}
+
+func isASCIIUpper(r rune) bool {
+	return r >= 'A' && r <= 'Z'
+}
+
+func isASCIILower(r rune) bool {
+	return r >= 'a' && r <= 'z'
+}
+
+func isASCIIDigit(r rune) bool {
+	return r >= '0' && r <= '9'
+}
+
 func extractJSONPathFromResource(res resource.Resource, jsonPathExpr string) (string, error) {
 	spec := res.Spec()
 
@@ -461,28 +567,4 @@ func sanitizeLabelValue(s string, maxLen int) string {
 	}
 
 	return s
-}
-
-func toSnakeCase(s string) string {
-	if s == "" {
-		return s
-	}
-
-	var result strings.Builder
-
-	runes := []rune(s)
-
-	for i, r := range runes {
-		if unicode.IsUpper(r) {
-			if i > 0 && (i+1 < len(runes) && unicode.IsLower(runes[i+1]) || unicode.IsLower(runes[i-1])) {
-				result.WriteRune('_')
-			}
-
-			result.WriteRune(unicode.ToLower(r))
-		} else {
-			result.WriteRune(r)
-		}
-	}
-
-	return result.String()
 }

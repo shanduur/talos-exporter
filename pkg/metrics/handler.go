@@ -11,19 +11,46 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/siderolabs/talos/pkg/machinery/client"
+	machineryclient "github.com/siderolabs/talos/pkg/machinery/client"
+
+	exporterclient "github.com/siderolabs/talos-exporter/pkg/client"
 )
 
 // HandlerFor creates an http.Handler that serves Prometheus metrics for a Talos cluster.
 // It registers Go runtime, process, and custom Talos metric collectors.
-func HandlerFor(ctx context.Context, c *client.Client, opts Options) http.Handler {
-	reg := prometheus.NewRegistry()
+func HandlerFor(ctx context.Context, c *machineryclient.Client, opts Options) http.Handler {
+	cache := &nodeCache{}
 
-	reg.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		newTalosCollector(c, opts),
-	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		collectCtx, cancel := mergeContexts(ctx, r.Context())
+		defer cancel()
 
-	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(
+			collectors.NewGoCollector(),
+			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+			newTalosCollectorWithCache(collectCtx, c, opts, cache),
+		)
+		reg.MustRegister(exporterclient.GRPCCollectors()...)
+
+		promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+	})
+}
+
+func mergeContexts(parent, request context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	ctx, cancel := context.WithCancel(request)
+
+	go func() {
+		select {
+		case <-parent.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	return ctx, cancel
 }

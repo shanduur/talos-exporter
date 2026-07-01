@@ -11,6 +11,7 @@ import (
 
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"google.golang.org/grpc"
 )
 
 // TalosClientOptions holds parameters for creating a Talos API client.
@@ -37,6 +38,7 @@ func New(
 	o := []client.OptionFunc{
 		client.WithConfig(cfg),
 		client.WithDefaultGRPCDialOptions(),
+		client.WithGRPCDialOptions(grpc.WithStatsHandler(grpcStatsHandler{})),
 		client.WithSideroV1KeysDir(clientconfig.CustomSideroV1KeysDirPath(opts.SideroV1KeysDir)),
 	}
 

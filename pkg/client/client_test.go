@@ -16,3 +16,10 @@ func TestNewEmptyOptions(t *testing.T) {
 		t.Fatalf("New with empty options error = %v", err)
 	}
 }
+
+func TestGRPCCollectors(t *testing.T) {
+	collectors := client.GRPCCollectors()
+	if len(collectors) != 3 {
+		t.Fatalf("GRPCCollectors() len = %d, want 3", len(collectors))
+	}
+}
