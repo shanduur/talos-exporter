@@ -418,8 +418,8 @@ func TestDescribe(t *testing.T) {
 		descs = append(descs, d)
 	}
 
-	if len(descs) < 2 {
-		t.Fatalf("expected >= 2 descriptors, got %d", len(descs))
+	if len(descs) < 3 {
+		t.Fatalf("expected >= 3 descriptors, got %d", len(descs))
 	}
 }
 
@@ -447,7 +447,7 @@ func TestCollectDiscoverFails(t *testing.T) {
 		n++
 	}
 
-	if n != 0 {
-		t.Errorf("expected 0 metrics on discovery failure, got %d", n)
+	if n != 1 {
+		t.Errorf("expected 1 metric (build info) on discovery failure, got %d", n)
 	}
 }

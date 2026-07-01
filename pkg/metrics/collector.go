@@ -25,9 +25,18 @@ import (
 	runtime "github.com/siderolabs/talos/pkg/machinery/resources/runtime"
 	"go.yaml.in/yaml/v4"
 	"k8s.io/client-go/util/jsonpath"
+
+	"github.com/siderolabs/talos-exporter/internal/version"
 )
 
 var (
+	talosExporterBuildInfo = prometheus.NewDesc(
+		"talos_exporter_build_info",
+		"Build information about the talos-exporter binary.",
+		[]string{"version", "sha", "name"},
+		nil,
+	)
+
 	talosVersionInfo = prometheus.NewDesc(
 		"talos_version_info",
 		"Talos version info",
@@ -73,6 +82,8 @@ func newTalosCollector(c *client.Client, opts Options) *talosCollector {
 }
 
 func (c *talosCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- talosExporterBuildInfo
+
 	ch <- talosVersionInfo
 
 	ch <- talosCOSIResourceCount
@@ -88,6 +99,11 @@ func (c *talosCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *talosCollector) Collect(ch chan<- prometheus.Metric) {
 	c.logger.Info("starting metrics collection")
 	defer c.logger.Info("finished metrics collection")
+
+	// Emit build info once per scrape.
+	ch <- prometheus.MustNewConstMetric(talosExporterBuildInfo, prometheus.GaugeValue, 1,
+		version.Tag, version.SHA, version.Name,
+	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
