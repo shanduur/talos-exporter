@@ -32,6 +32,9 @@ spec:
       toplevel: true
       dependants:
         - coverage
+    - name: talosctl
+      dependants:
+        - e2e-test
 ---
 kind: custom.Step
 name: e2e-test
@@ -40,21 +43,21 @@ spec:
     enabled: true
     phony: true
     depends:
-      - image-talos-exporter
+      - talosctl
     variables:
       - name: TALOS_VERSION
         defaultValue: 1.13.5
     script:
-      - "@$(MAKE) image-talos-exporter PUSH=true"
+      - 'E2E_PLATFORM=linux/amd64; case "$$(uname -m)" in arm64|aarch64) E2E_PLATFORM=linux/arm64;; esac; $(MAKE) image-talos-exporter PUSH=true PLATFORM=$${E2E_PLATFORM}'
       - docker pull $(REGISTRY)/$(USERNAME)/talos-exporter:$(IMAGE_TAG)
-      - '$(ARTIFACTS)/talosctl cluster create e2e --name=talos-exporter-e2e --kubernetes-version=v1.35.0 --mtu=1450 --talosconfig-destination=$(ARTIFACTS)/talosconfig'
-      - '$(ARTIFACTS)/talosctl kubeconfig $(ARTIFACTS)/kubeconfig --talosconfig=$(ARTIFACTS)/talosconfig --nodes=10.5.0.2 --force'
-      - docker run --rm --net=host --cap-drop=all --cap-add=DAC_OVERRIDE --userns=host -v /var/run:/var/run -v $(PWD)/$(ARTIFACTS)/:/out/ $(REGISTRY)/$(USERNAME)/talos-exporter:$(IMAGE_TAG) /talos-exporter --talosconfig=/out/talosconfig --listen=:9104 &
+      - '$(ARTIFACTS)/talosctl cluster create docker --name=talos-exporter-e2e --kubernetes-version=v1.35.0 --talosconfig-destination=$(ARTIFACTS)/talosconfig --state=$(ARTIFACTS)/cluster-state --subnet=10.5.1.0/24'
+      - '$(ARTIFACTS)/talosctl kubeconfig $(ARTIFACTS)/kubeconfig --talosconfig=$(ARTIFACTS)/talosconfig --nodes=10.5.1.2'
+      - docker run --rm --net=host --cap-drop=all --cap-add=DAC_OVERRIDE --userns=host -v /var/run:/var/run -v $(PWD)/$(ARTIFACTS)/:/out/ $(REGISTRY)/$(USERNAME)/talos-exporter:$(IMAGE_TAG) /talos-exporter --talosconfig=/out/talosconfig --listen=:9104 --aggregate &
       - sleep 3
       - go test -tags=integration -c -o $(ARTIFACTS)/e2e.test ./internal/integration/
       - 'EXPORTER_ADDR=http://localhost:9104/metrics $(ARTIFACTS)/e2e.test -test.v -test.run TestExporterServesMetrics'
       - kill %1 || true
-      - '$(ARTIFACTS)/talosctl cluster destroy --name=talos-exporter-e2e'
+      - '$(ARTIFACTS)/talosctl cluster destroy --name=talos-exporter-e2e --state=$(ARTIFACTS)/cluster-state'
       - rm -f $(ARTIFACTS)/talosconfig $(ARTIFACTS)/kubeconfig $(ARTIFACTS)/e2e.test
   ghaction:
     enabled: true
